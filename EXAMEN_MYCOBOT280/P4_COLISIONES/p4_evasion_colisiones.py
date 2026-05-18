@@ -1,22 +1,4 @@
-#!/usr/bin/env python3
-# coding: utf-8
-"""
-P4 - Evasion de Colisiones (Problema Abierto)
-MyCobot 280 - 6 DOF
 
-Estrategia elegida: COMBINACION de
-  1. Limites conservadores por joint
-  2. Verificacion de altura minima por FK antes de ejecutar
-  3. Posicion intermedia segura (waypoint de clearance)
-
-Justificacion:
-  El MyCobot 280 opera en una mesa de laboratorio con objetos fijos
-  (zona de deposito, camara, cables). Los tres mecanismos juntos cubren:
-    - Colisiones con la mesa: altura minima via FK
-    - Auto-colisiones: limites conservadores
-    - Objetos fijos: waypoint intermedio garantiza clearance
-  Es el metodo mas robusto sin requerir sensores adicionales.
-"""
 import sys
 import os
 import time
