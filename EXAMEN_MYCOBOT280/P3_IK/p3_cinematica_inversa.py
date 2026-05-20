@@ -11,153 +11,415 @@ Dos enfoques:
 Verifica ambas soluciones para 3 posiciones cartesianas y tabula el error.
 Identifica configuraciones singulares y posiciones fuera del workspace.
 """
-import time
+
 import sys
 import os
+import math
+import time
 import numpy as np
-from math import atan2, sqrt, acos, asin, degrees, radians, pi
+from typing import Optional, List, Tuple
 
-# Constantes del robot (de la tabla DH)
-L2 = 110.4   # mm - longitud del eslabon 2 (hombro)
-L3 = 96.0    # mm - longitud del eslabon 3 (codo)
-D1 = 131.56  # mm - altura base (d1)
-D4 = 66.39   # mm - offset muneca 1
-D5 = 73.18   # mm - offset muneca 2
-D6 = 48.60   # mm - longitud gripper
+# Importar modulos de otras practicas
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'P1_DH'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'P2_FK'))
 
-# Alcance maximo teorico del robot
-MAX_REACH = L2 + L3 + D4 + D5 + D6   # aprox 395 mm
+try:
+    from p1_dh_representacion import DH_TABLE, forward_kinematics, extract_position
+    from p2_cinematica_directa import ForwardKinematics
+except ImportError as e:
+    print(f" No se pudo importar modulos de cinemática directa: {e}")
+    ForwardKinematics = None
+
+# -----------------------------------------------------------------------
+# Constantes del MyCobot 280
+# -----------------------------------------------------------------------
+ALTURA_BASE = 131.56           # d1 en mm
+LONGITUD_ESLABÓN_2 = 110.4     # a2 en mm (hombro)
+LONGITUD_ESLABÓN_3 = 96.0      # a3 en mm (codo)
+D_MUÑECA_Z4 = 66.39            # d4 en mm
+D_MUÑECA_Z5 = 73.18            # d5 en mm
+LONGITUD_GRIPPER = 48.60       # d6 en mm
+
+# Parametros avanzados (offset de muñeca en plano XZ)
+_D_MUÑECA_Z3 = 2.0             # mm - offset mínimo del eje Z
+_L3_EFF = math.sqrt(LONGITUD_ESLABÓN_3**2 + D_MUÑECA_Z5**2)  # eslabón efectivo
+_ALPHA_MUÑECA = math.atan2(D_MUÑECA_Z5, LONGITUD_ESLABÓN_3)  # ángulo offset
+
+# Tabla DH para optimización numérica 6DOF
+PARAMETROS_DH = [
+    (0,      131.56,  90.0,   (-168, 168)),    # J1
+    (110.4,    0,      0.0,   (-135,  90)),    # J2
+    (96,       0,      0.0,   (-150, 150)),    # J3
+    (0,     66.39,   -90.0,   (-145, 145)),    # J4
+    (0,     73.18,    90.0,   (-165, 165)),    # J5
+    (0,     48.60,     0.0,   (-180, 180)),    # J6
+]
+
+import logging
+registro = logging.getLogger(__name__)
 
 
 class InverseKinematics:
     """
-    Cinematica inversa para el MyCobot 280.
-    Implementa IK analitica simplificada para los 3 primeros joints.
+    Cinematica inversa para el MyCobot 280 con multiples enfoques.
+    
+    Metodos:
+      - resolver():        IK analitica avanzada con offset de muñeca
+      - resolver_pdf():    IK analitica simplificada (formula del examen)
+      - resolver_via_api(): IK numerica via API del robot
+      - resolver_6dof():   IK numerica 6DOF con scipy.optimize
+      - comparar_ik():     compara soluciones analitica vs API
     """
 
     def __init__(self):
-        self.L2 = L2
-        self.L3 = L3
-        self.d1 = D1
+        """Inicializa el solucionador IK con cinemática directa."""
+        self.cd = ForwardKinematics() if ForwardKinematics else None
 
-    def is_reachable(self, x, y, z):
+    # ====================================================================
+    # IK Analitica Avanzada (con offset de muñeca)
+    # ====================================================================
+    def resolver(self, x: float, y: float, z: float, codo_arriba: bool = True) -> list:
         """
-        Verifica si la posicion (x,y,z) esta dentro del espacio de trabajo.
-
-        Retorna (bool, str): (alcanzable, mensaje)
-        """
-        r_xy = sqrt(x**2 + y**2)
-        z_prime = z - self.d1
-        dist = sqrt(r_xy**2 + z_prime**2)
-
-        if dist > (self.L2 + self.L3):
-            return False, f"Fuera de alcance: dist={dist:.1f} mm > max={self.L2+self.L3:.1f} mm"
-        if dist < abs(self.L2 - self.L3):
-            return False, f"Muy cerca: dist={dist:.1f} mm < min={abs(self.L2-self.L3):.1f} mm"
-        if z < 10:
-            return False, f"Z={z:.1f} mm por debajo de la mesa (Z_min~10 mm)"
-        return True, "Alcanzable"
-
-    def is_singular(self, x, y, z):
-        """
-        Detecta configuraciones singulares.
-        Singular cuando el brazo esta completamente extendido o completamente plegado.
-        """
-        r_xy = sqrt(x**2 + y**2)
-        z_prime = z - self.d1
-        dist = sqrt(r_xy**2 + z_prime**2)
-
-        # Singularidad de extension: brazo completamente extendido
-        if abs(dist - (self.L2 + self.L3)) < 5.0:
-            return True, "Singularidad de extension (brazo completamente estirado)"
-        # Singularidad de retraccion: codo alineado con hombro
-        if abs(dist - abs(self.L2 - self.L3)) < 5.0:
-            return True, "Singularidad de retraccion (codo plegado al maximo)"
-        # Singularidad en la base: x=0 y=0
-        if r_xy < 1.0:
-            return True, "Singularidad en eje Z (x~0, y~0)"
-        return False, "No singular"
-
-    def solve_analytical(self, x, y, z, elbow_up=True):
-        """
-        IK analitica simplificada para los primeros 3 joints.
-        Modelo: base rotacional (J1) + brazo planar 2R (J2, J3).
-        J4, J5, J6 se fijan a 0 (orientacion neutra).
+        IK analitica avanzada: considera offset de muñeca (d5).
+        Resuelve J1-J3; J4, J5 = 0, J6 = -45.
 
         Parametros
         ----------
-        x, y, z    : float  posicion objetivo en mm
-        elbow_up   : bool   True = codo arriba, False = codo abajo
+        x, y, z : float
+            Posicion objetivo en mm
+        codo_arriba : bool
+            True = codo arriba, False = codo abajo
 
         Retorna
         -------
-        list[float]  [theta1..theta6] en grados, o None si no es alcanzable
+        list : [j1, j2, j3, 0, 0, -45] en grados
+
+        Lanza ValueError si está fuera del workspace.
         """
-        reachable, msg = self.is_reachable(x, y, z)
-        if not reachable:
-            print(f"  [IK Analitica] FALLO: {msg}")
-            return None
+        rho_xy = math.sqrt(x**2 + y**2)
+        if rho_xy < _D_MUÑECA_Z3:
+            raise ValueError(
+                f"Posición ({x:.1f}, {y:.1f}, {z:.1f}) muy cerca del eje Z — "
+                "inaccesible con la muñeca fija."
+            )
 
-        # theta1: rotacion de la base alrededor de Z
-        theta1 = degrees(atan2(y, x))
+        # J1: sin(j1+φ) = K/rho donde φ = atan2(-y, x)
+        j1 = math.asin(_D_MUÑECA_Z3 / rho_xy) - math.atan2(-y, x)
+        c1, s1 = math.cos(j1), math.sin(j1)
+        alcance = c1 * x + s1 * y          # proyección sobre dirección del brazo
+        
+        if alcance < 0:                     # solución alternativa
+            j1 = math.pi - math.asin(_D_MUÑECA_Z3 / rho_xy) - math.atan2(-y, x)
+            c1, s1 = math.cos(j1), math.sin(j1)
+            alcance = c1 * x + s1 * y
 
-        # proyeccion en el plano del brazo
-        r = sqrt(x**2 + y**2)
-        z_prime = z - self.d1
+        z_prima = z - ALTURA_BASE
 
-        # coseno del angulo del codo (ley de cosenos)
-        cos_theta3 = (r**2 + z_prime**2 - self.L2**2 - self.L3**2) / (2 * self.L2 * self.L3)
-        cos_theta3 = max(-1.0, min(1.0, cos_theta3))   # clamp para estabilidad numerica
+        # Problema 2R con L3_eff = sqrt(L3^2 + d5^2)
+        r2 = alcance**2 + z_prima**2
+        coseno_j3_eff = (r2 - LONGITUD_ESLABÓN_2**2 - _L3_EFF**2) / (
+            2 * LONGITUD_ESLABÓN_2 * _L3_EFF
+        )
+        
+        if abs(coseno_j3_eff) > 1.0:
+            raise ValueError(
+                f"Posición ({x:.1f}, {y:.1f}, {z:.1f}) fuera del espacio de trabajo."
+            )
 
-        # theta3 con signo segun elbow_up / elbow_down
-        sin_theta3 = sqrt(1 - cos_theta3**2) if elbow_up else -sqrt(1 - cos_theta3**2)
-        theta3 = degrees(atan2(sin_theta3, cos_theta3))
+        signo_codo = 1.0 if codo_arriba else -1.0
+        seno_j3_eff = signo_codo * math.sqrt(1.0 - coseno_j3_eff**2)
+        j3_eff = math.atan2(seno_j3_eff, coseno_j3_eff)
 
-        # theta2
-        theta2 = degrees(
-            atan2(z_prime, r) - atan2(self.L3 * sin_theta3, self.L2 + self.L3 * cos_theta3)
+        j2 = (math.atan2(z_prima, alcance)
+              - math.atan2(_L3_EFF * seno_j3_eff,
+                           LONGITUD_ESLABÓN_2 + _L3_EFF * coseno_j3_eff))
+        j3 = j3_eff - _ALPHA_MUÑECA
+
+        return [math.degrees(j1), math.degrees(j2), math.degrees(j3), 0.0, 0.0, -45.0]
+
+    # ====================================================================
+    # IK Analitica Simplificada (formula del examen)
+    # ====================================================================
+    def resolver_pdf(self, x: float, y: float, z: float, codo_arriba: bool = True) -> list:
+        """
+        IK analitica simplificada — formula exacta del examen (Sec. 3.3).
+        θ1 = atan2(y, x), modelo planar 2R para J2-J3.
+        J4, J5 = 0, J6 = -45.
+
+        Parametros
+        ----------
+        x, y, z : float
+            Posicion objetivo en mm
+        codo_arriba : bool
+            True = codo arriba, False = codo abajo
+
+        Retorna
+        -------
+        list : [j1, j2, j3, 0, 0, -45] en grados
+
+        Lanza ValueError si está fuera del workspace.
+        """
+        j1 = math.atan2(y, x)
+
+        r = math.sqrt(x**2 + y**2)
+        z_prima = z - ALTURA_BASE
+
+        r2 = r**2 + z_prima**2
+        cos_j3 = (r2 - LONGITUD_ESLABÓN_2**2 - LONGITUD_ESLABÓN_3**2) / (
+            2 * LONGITUD_ESLABÓN_2 * LONGITUD_ESLABÓN_3
         )
 
-        # J4, J5, J6 en 0 (orientacion neutra del gripper)
-        return [theta1, theta2, theta3, 0.0, 0.0, 0.0]
+        if abs(cos_j3) > 1.0:
+            raise ValueError(
+                f"Posición ({x:.1f}, {y:.1f}, {z:.1f}) fuera del espacio de trabajo."
+            )
 
-    def solve_api(self, mc, x, y, z, rx=-175.0, ry=0.0, rz=-45.0, speed=30):
+        signo = 1.0 if codo_arriba else -1.0
+        sin_j3 = signo * math.sqrt(1.0 - cos_j3**2)
+        j3 = math.atan2(sin_j3, cos_j3)
+
+        j2 = (math.atan2(z_prima, r)
+              - math.atan2(LONGITUD_ESLABÓN_3 * sin_j3,
+                           LONGITUD_ESLABÓN_2 + LONGITUD_ESLABÓN_3 * cos_j3))
+
+        return [math.degrees(j1), math.degrees(j2), math.degrees(j3), 0.0, 0.0, -45.0]
+
+    # ====================================================================
+    # IK Numerica via API del robot
+    # ====================================================================
+    def resolver_via_api(self, robot, x: float, y: float, z: float,
+                         rx: float = -175.0, ry: float = 0.0, rz: float = -45.0,
+                         velocidad: int = 30) -> list:
         """
-        IK numerica via API del robot.
-        Envia las coordenadas al robot y lee los angulos resultantes.
+        IK numerica via API del robot (requiere hardware).
 
         Parametros
         ----------
-        mc    : MyCobot  instancia del robot
-        x,y,z : float    posicion objetivo en mm
-        rx,ry,rz: float  orientacion en grados (Euler)
-        speed : int      velocidad de movimiento (0-100)
+        robot : MyCobot
+            Instancia conectada del robot
+        x, y, z : float
+            Posicion objetivo en mm
+        rx, ry, rz : float
+            Orientacion en grados (Euler XYZ)
+        velocidad : int
+            Velocidad de movimiento (0-100)
 
         Retorna
         -------
-        list[float]  [theta1..theta6] en grados, o None si falla
+        list : [j1, j2, j3, j4, j5, j6] en grados
         """
-        coords = [x, y, z, rx, ry, rz]
-        mc.send_coords(coords, speed, 1)
-        time.sleep(3.0)
-        angles = mc.get_angles()
-        if angles and len(angles) == 6:
-            return list(angles)
-        return None
+        robot.send_coords([x, y, z, rx, ry, rz], velocidad, 1)
+        time.sleep(2.0)
+        angles = robot.get_angles()
+        return list(angles) if angles else None
+
+    # ====================================================================
+    # IK Numerica 6DOF (opcional, requiere scipy)
+    # ====================================================================
+    def resolver_6dof(self,
+                      x: float, y: float, z: float,
+                      rx: float = None, ry: float = None, rz: float = None,
+                      semilla: list = None,
+                      peso_rotacion: float = 50.0,
+                      solo_posicion: bool = False,
+                      max_iter: int = 500,
+                      n_intentos: int = 6) -> list:
+        """
+        IK numerica con los 6 grados de libertad (requiere scipy).
+
+        Modos:
+          - solo_posicion=True: minimiza solo error de posicion
+          - rx,ry,rz especificados: minimiza posicion + orientacion Euler XYZ
+
+        Parametros
+        ----------
+        x, y, z : float
+            Posicion objetivo en mm
+        rx, ry, rz : float, optional
+            Orientacion Euler XYZ en grados
+        semilla : list, optional
+            Configuración inicial para la optimización
+        solo_posicion : bool
+            Si True, ignora la orientación
+        max_iter : int
+            Máximo de iteraciones del optimizador
+        n_intentos : int
+            Número de semillas distintas a probar
+
+        Retorna
+        -------
+        list : [j1, j2, j3, j4, j5, j6] en grados
+
+        Lanza RuntimeError si scipy no está disponible o si no converge.
+        """
+        try:
+            from scipy.optimize import least_squares
+            from scipy.spatial.transform import Rotation
+        except ImportError as e:
+            raise RuntimeError(
+                "scipy es requerido para IK 6DOF. Instálalo con `pip install scipy`."
+            ) from e
+
+        usar_orientacion = (not solo_posicion) and (
+            rx is not None or ry is not None or rz is not None
+        )
+        if usar_orientacion:
+            rx = 0.0 if rx is None else rx
+            ry = 0.0 if ry is None else ry
+            rz = 0.0 if rz is None else rz
+            R_objetivo = Rotation.from_euler('xyz', [rx, ry, rz], degrees=True).as_matrix()
+        else:
+            R_objetivo = None
+
+        pos_objetivo = np.array([x, y, z], dtype=float)
+        limites_min = np.array([math.radians(r[0]) for *_, r in PARAMETROS_DH])
+        limites_max = np.array([math.radians(r[1]) for *_, r in PARAMETROS_DH])
+
+        def residuo(joints_rad):
+            if self.cd is None:
+                return np.zeros(3)
+            T = self.cd.compute(np.degrees(joints_rad).tolist())[0]
+            err_pos = T[:3, 3] - pos_objetivo
+            if R_objetivo is None:
+                return err_pos
+            R_err = T[:3, :3] @ R_objetivo.T
+            err_rot = Rotation.from_matrix(R_err).as_rotvec() * peso_rotacion
+            return np.concatenate([err_pos, err_rot])
+
+        semillas = []
+        if semilla is not None:
+            semillas.append(list(semilla))
+        for codo in (True, False):
+            try:
+                semillas.append(self.resolver_pdf(x, y, z, codo_arriba=codo))
+            except ValueError:
+                pass
+        
+        rng = np.random.default_rng(42)
+        while len(semillas) < n_intentos:
+            base = semillas[0] if semillas else [0.0, -30.0, 30.0, 0.0, 0.0, -45.0]
+            perturbacion = rng.uniform(-20.0, 20.0, size=6)
+            semillas.append([b + p for b, p in zip(base, perturbacion)])
+
+        mejor_joints = None
+        mejor_costo = np.inf
+
+        for sem in semillas[:n_intentos]:
+            sem_rad = np.clip(np.radians(sem), limites_min, limites_max)
+            try:
+                res = least_squares(
+                    residuo, sem_rad,
+                    bounds=(limites_min, limites_max),
+                    method='trf', max_nfev=max_iter,
+                )
+            except Exception:
+                continue
+            if res.cost < mejor_costo:
+                mejor_costo = res.cost
+                mejor_joints = np.degrees(res.x).tolist()
+
+        if mejor_joints is None:
+            raise ValueError(
+                f"IK 6DOF no convergió para ({x:.1f}, {y:.1f}, {z:.1f})."
+            )
+
+        if self.cd:
+            T_final = self.cd.compute(mejor_joints)[0]
+            err_pos_mm = float(np.linalg.norm(T_final[:3, 3] - pos_objetivo))
+            if usar_orientacion:
+                err_rot_deg = float(np.degrees(np.linalg.norm(
+                    Rotation.from_matrix(T_final[:3, :3] @ R_objetivo.T).as_rotvec()
+                )))
+                if err_pos_mm > 2.0 or err_rot_deg > 5.0:
+                    registro.warning(
+                        "IK 6DOF residual: err_pos=%.2f mm, err_rot=%.2f° "
+                        "(orientación pedida puede ser incompatible).",
+                        err_pos_mm, err_rot_deg,
+                    )
+            elif err_pos_mm > 1.0:
+                registro.warning(
+                    "IK 6DOF (solo posición) residual: err_pos=%.2f mm.",
+                    err_pos_mm,
+                )
+
+        return mejor_joints
+
+    # ====================================================================
+    # Comparación: IK Analítica vs API
+    # ====================================================================
+    def comparar_ik(self, robot=None, posiciones: list = None) -> list:
+        """
+        Compara IK analítica simplificada vs solución API para varias posiciones.
+
+        Parametros
+        ----------
+        robot : MyCobot, optional
+            Instancia del robot (None para solo analítica)
+        posiciones : list
+            Lista de tuplas (x, y, z) en mm
+
+        Retorna
+        -------
+        list : resultados con estructura {"xyz": (x,y,z), "analitica": [...], "api": [...], "error_grados": [...]}
+        """
+        if posiciones is None:
+            posiciones = [
+                (150, 0, 200),
+                (100, 100, 180),
+                (80, 80, 220),
+            ]
+
+        resultados = []
+
+        for x, y, z in posiciones:
+            fila = {"xyz": (x, y, z)}
+
+            # IK Analítica
+            try:
+                fila["analitica"] = self.resolver_pdf(x, y, z)
+            except ValueError as e:
+                fila["analitica"] = None
+                fila["error"] = str(e)
+
+            # IK vía API
+            if robot is not None:
+                try:
+                    fila["api"] = self.resolver_via_api(robot, x, y, z)
+                except Exception as e:
+                    fila["api"] = None
+                    if "error" not in fila:
+                        fila["error"] = str(e)
+
+            # Comparar
+            if fila.get("analitica") and fila.get("api"):
+                errores = [abs(a - b) for a, b in zip(fila["analitica"], fila["api"])]
+                fila["error_grados"] = [round(e, 2) for e in errores]
+
+            resultados.append(fila)
+
+        return resultados
 
 
+# -----------------------------------------------------------------------
+# Funciones de Verificación
+# -----------------------------------------------------------------------
 def compare_ik_solutions(mc=None):
     """
     Compara IK analitica vs. solucion API para 3 posiciones cartesianas.
     Tabula el error en grados entre ambas soluciones.
+
+    Parametros
+    ----------
+    mc : MyCobot, optional
+        Instancia del robot (None para solo analítica)
     """
     ik = InverseKinematics()
 
-    # 3 posiciones de prueba en mm (dentro del workspace del MyCobot 280)
+    # 3 posiciones de prueba en mm
     test_positions = [
-        (150,   0, 200, "Frente al robot"),
+        (150, 0, 200, "Frente al robot"),
         (100, 100, 180, "Diagonal derecha"),
-        (  0, 150, 220, "Lateral izquierdo"),
+        (80, 80, 220, "Lateral izquierdo"),
     ]
 
     print("\n" + "="*100)
@@ -168,53 +430,47 @@ def compare_ik_solutions(mc=None):
     for x, y, z, desc in test_positions:
         print(f"\n[Posicion: {desc}]  x={x}, y={y}, z={z} mm")
 
-        # Verificar alcanzabilidad y singularidad
-        reachable, reach_msg = ik.is_reachable(x, y, z)
-        singular, sing_msg = ik.is_singular(x, y, z)
-        print(f"  Alcanzable: {reach_msg}")
-        print(f"  Singular:   {sing_msg}")
+        # IK analítica
+        try:
+            angles_analytical = ik.resolver_pdf(x, y, z)
+            print(f"  IK Analitica: {[round(a, 2) for a in angles_analytical]}")
+        except ValueError as e:
+            print(f"  IK Analitica: FALLO - {e}")
+            angles_analytical = None
 
-        if not reachable:
-            results.append((desc, None, None, None))
-            continue
-
-        # IK analitica
-        angles_analytical = ik.solve_analytical(x, y, z)
-        print(f"  IK Analitica: {[round(a, 2) for a in angles_analytical] if angles_analytical else 'FALLO'}")
-
-        # IK API (requiere hardware)
+        # IK vía API
         angles_api = None
         if mc is not None:
-            angles_api = ik.solve_api(mc, x, y, z)
-            print(f"  IK API:       {[round(a, 2) for a in angles_api] if angles_api else 'FALLO'}")
-        else:
-            print(f"  IK API:       N/A (sin hardware)")
+            try:
+                angles_api = ik.resolver_via_api(mc, x, y, z)
+                print(f"  IK API:       {[round(a, 2) for a in angles_api]}")
+            except Exception as e:
+                print(f"  IK API:       FALLO - {e}")
+                angles_api = None
 
-        # Error en grados (solo para los 3 primeros joints)
+        # Calcular error
         if angles_analytical and angles_api:
-            errors = [abs(angles_analytical[i] - angles_api[i]) for i in range(6)]
-            error_total = sqrt(sum(e**2 for e in errors))
-            print(f"  Error por joint (deg): {[round(e,3) for e in errors]}")
-            print(f"  Error RMS total:       {error_total:.4f} deg")
+            errores = [abs(a - b) for a, b in zip(angles_analytical, angles_api)]
+            results.append((desc, angles_analytical, angles_api, errores))
+            print(f"  Error (grados): {[round(e, 2) for e in errores]}")
         else:
-            errors = [float('nan')] * 6
-            error_total = float('nan')
+            results.append((desc, angles_analytical, angles_api, None))
 
-        results.append((desc, angles_analytical, angles_api, errors))
-
+    # Tabla resumen
     print("\n" + "="*100)
     print("TABLA RESUMEN")
     print("="*100)
-    print(f"{'Posicion':<22} {'J1 err':>8} {'J2 err':>8} {'J3 err':>8} {'J4 err':>8} {'J5 err':>8} {'J6 err':>8}")
+    print(
+        f"{'Posicion':<22} {'J1 err':>8} {'J2 err':>8} {'J3 err':>8} "
+        f"{'J4 err':>8} {'J5 err':>8} {'J6 err':>8}"
+    )
     print("-"*100)
     for desc, ang_a, ang_api, errs in results:
-        if errs is None:
-            print(f"{desc:<22}  {'FUERA DE WORKSPACE':>52}")
-        elif any(np.isnan(errs)):
-            print(f"{desc:<22}  {'SIN HARDWARE':>52}")
+        if errs:
+            err_str = " ".join(f"{e:>8.2f}" for e in errs)
+            print(f"{desc:<22} {err_str}")
         else:
-            err_str = " ".join(f"{e:>8.3f}" for e in errs)
-            print(f"{desc:<22}  {err_str}")
+            print(f"{desc:<22} {'N/A':>8} {'N/A':>8} {'N/A':>8} {'N/A':>8} {'N/A':>8} {'N/A':>8}")
     print("="*100)
 
     return results
@@ -230,11 +486,11 @@ def identify_singular_configs():
     singulars = [
         ("Brazo completamente extendido",
          "J1=0, J2=-20, J3=0",
-         "El codo esta alineado. Infinitas soluciones de J2/J3 dan la misma pos."),
+         "El codo está alineado. Infinitas soluciones de J2/J3 dan la misma pos."),
         ("Singularidad en eje Z (overhead)",
          "J1=cualquier, x~0, y~0",
          "El brazo apunta verticalmente. J1 indefinido (atan2(0,0))."),
-        ("Muñeca alinhada (wrist singularity)",
+        ("Muñeca alineada (wrist singularity)",
          "J5=0 deg",
          "J4 y J6 se vuelven colineales, perdiendo un DOF de orientacion."),
         ("Retraccion maxima",
@@ -243,18 +499,33 @@ def identify_singular_configs():
     ]
     for name, config, desc in singulars:
         print(f"\n[{name}]")
-        print(f"  Ejemplo: {config}")
-        print(f"  Efecto:  {desc}")
+        print(f"  Config: {config}")
+        print(f"  Desc:   {desc}")
     print("="*70)
 
 
+# -----------------------------------------------------------------------
+# Función Principal
+# -----------------------------------------------------------------------
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+
+    print("="*70)
+    print("P3 - CINEMATICA INVERSA - MyCobot 280")
+    print("="*70)
+
+    # Comparación offline (sin hardware)
     compare_ik_solutions(mc=None)
+
+    # Configuraciones singulares
     identify_singular_configs()
 
-    # Para uso con hardware:
-    # from pymycobot.mycobot import MyCobot
-    # mc = MyCobot('/dev/ttyUSB0', 1000000)
-    # mc.power_on()
-    # time.sleep(0.5)
-    # compare_ik_solutions(mc=mc)
+    print("\n[INFO] Para uso con hardware real:")
+    print("  from pymycobot.mycobot import MyCobot")
+    print("  mc = MyCobot('/dev/ttyUSB0', 1000000)")
+    print("  mc.power_on()")
+    print("  time.sleep(0.5)")
+    print("  compare_ik_solutions(mc=mc)")
