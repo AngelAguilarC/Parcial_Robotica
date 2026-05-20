@@ -1,3 +1,0 @@
-2025-04-25 16:54:01 - DEBUG - _write: fe fe f 22 0 0 0 0 dc d8 25 1c 0 0 ee 6c 32 fa 
-2025-04-25 16:54:25 - DEBUG - _write: fe fe f 22 0 0 0 0 dc d8 25 1c 0 0 ee 6c 32 fa 
-2025-04-25 16:55:00 - DEBUG - _write: fe fe f 22 0 0 0 0 dc d8 25 1c 0 0 ee 6c 32 fa 
