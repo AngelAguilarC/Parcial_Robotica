@@ -7,16 +7,14 @@ from math import radians, degrees, cos, sin, atan2, sqrt, acos
 # -----------------------------------------------------------------------
 # Parametros del robot (de la tabla DH del examen)
 # -----------------------------------------------------------------------
-# Tabla DH: (a_mm, d_mm, alpha_deg, theta_offset_deg)
-# theta_offset refleja la pose de referencia:
-#   q2 = theta2 - 90,  q4 = theta4 - 90,  q5 = theta5 + 90
 DH_TABLE = [
-    (   0,   134.75,  90.0,   0.0),   # J1 Base
-    (-110,     0,      0.0, -90.0),   # J2 Shoulder
-    ( -96,     0,      0.0,   0.0),   # J3 Elbow
-    (   0,    63.4,   90.0, -90.0),   # J4 Wrist 1
-    (   0,   75.05,  -90.0,  90.0),   # J5 Wrist 2
-    (   0,    50.0,    0.0,   0.0),   # J6 Gripper
+    # (a_mm, d_mm, alpha_deg)
+    (  0,   131.56,  90.0),   # J1 Base
+    (110.4,   0,      0.0),   # J2 Shoulder
+    ( 96,     0,      0.0),   # J3 Elbow
+    (  0,   66.39,  -90.0),   # J4 Wrist 1
+    (  0,   73.18,   90.0),   # J5 Wrist 2
+    (  0,   48.60,   0.0),    # J6 Gripper
 ]
 
 JOINT_LIMITS = [
@@ -29,9 +27,9 @@ CONSERVATIVE_LIMITS = [
     (-130, 130), (-150, 150), (-175, 175),
 ]
 
-L2 = 110.0   # abs(a2)
-L3 = 96.0    # abs(a3)
-D1 = 134.75  # d1
+L2 = 110.4
+L3 = 96.0
+D1 = 131.56
 Z_MIN_SAFE = 60.0
 
 
@@ -55,8 +53,8 @@ class ForwardKinematics:
     def compute(self, thetas_deg):
 
         T = np.eye(4)
-        for i, (a, d, alpha, offset) in enumerate(DH_TABLE):
-            T = T @ self.dh_matrix(thetas_deg[i] + offset, d, a, alpha)
+        for i, (a, d, alpha) in enumerate(DH_TABLE):
+            T = T @ self.dh_matrix(thetas_deg[i], d, a, alpha)
         pos = (T[0, 3], T[1, 3], T[2, 3])
         return T, pos
 

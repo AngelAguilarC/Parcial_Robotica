@@ -17,14 +17,13 @@ import os
 import numpy as np
 from math import atan2, sqrt, acos, asin, degrees, radians, pi
 
-# Constantes del robot (tabla DH de referencia)
-# a2=-110 y a3=-96 en la tabla DH; se usa el valor absoluto para distancias geometricas
-L2 = 110.0   # mm - longitud del eslabon 2 (|a2|)
-L3 = 96.0    # mm - longitud del eslabon 3 (|a3|)
-D1 = 134.75  # mm - altura base (d1)
-D4 = 63.4    # mm - offset muneca 1 (d4)
-D5 = 75.05   # mm - offset muneca 2 (d5)
-D6 = 50.0    # mm - longitud gripper (d6)
+# Constantes del robot (de la tabla DH)
+L2 = 110.4   # mm - longitud del eslabon 2 (hombro)
+L3 = 96.0    # mm - longitud del eslabon 3 (codo)
+D1 = 131.56  # mm - altura base (d1)
+D4 = 66.39   # mm - offset muneca 1
+D5 = 73.18   # mm - offset muneca 2
+D6 = 48.60   # mm - longitud gripper
 
 # Alcance maximo teorico del robot
 MAX_REACH = L2 + L3 + D4 + D5 + D6   # aprox 395 mm

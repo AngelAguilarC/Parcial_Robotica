@@ -4,22 +4,22 @@ from math import radians, degrees, cos, sin, atan2, sqrt
 
 DH_PARAMS = {
     # Joint: (a_i,  d_i,    alpha_i, theta_offset, range_min, range_max)
-    'J1': (   0,   134.75,  90.0,   0.0,  -168,  168),
-    'J2': (-110,     0,      0.0, -90.0,  -135,   90),
-    'J3': ( -96,     0,      0.0,   0.0,  -150,  150),
-    'J4': (   0,    63.4,   90.0, -90.0,  -145,  145),
-    'J5': (   0,   75.05,  -90.0,  90.0,  -165,  165),
-    'J6': (   0,    50.0,    0.0,   0.0,  -180,  180),
+    'J1': (  0,    131.56,  90.0,   0.0,  -168,  168),
+    'J2': (110.4,    0,      0.0,   0.0,  -135,   90),
+    'J3': ( 96,      0,      0.0,   0.0,  -150,  150),
+    'J4': (  0,    66.39,  -90.0,   0.0,  -145,  145),
+    'J5': (  0,    73.18,   90.0,   0.0,  -165,  165),
+    'J6': (  0,    48.6,    0.0,   0.0,  -180,  180),
 }
 
-# Tabla DH: (a_mm, d_mm, alpha_deg, theta_offset_deg)
 DH_TABLE = [
-    (   0,   134.75,  90.0,   0.0),   # J1 Base
-    (-110,     0,      0.0, -90.0),   # J2 Shoulder
-    ( -96,     0,      0.0,   0.0),   # J3 Elbow
-    (   0,    63.4,   90.0, -90.0),   # J4 Wrist 1
-    (   0,   75.05,  -90.0,  90.0),   # J5 Wrist 2
-    (   0,    50.0,    0.0,   0.0),   # J6 Gripper
+    # a_i   d_i      alpha_i   (mm and degrees)
+    (  0,   131.56,   90.0),   # J1 Base
+    (110.4,   0,       0.0),   # J2 Shoulder
+    ( 96,     0,       0.0),   # J3 Elbow
+    (  0,   66.39,   -90.0),   # J4 Wrist 1
+    (  0,   73.18,    90.0),   # J5 Wrist 2
+    (  0,   48.60,     0.0),   # J6 Gripper
 ]
 
 JOINT_RANGES = [
@@ -52,8 +52,8 @@ def dh_matrix(theta_deg, d, a, alpha_deg):
 def build_all_Ti(thetas_deg):
 
     matrices = []
-    for i, (a, d, alpha, offset) in enumerate(DH_TABLE):
-        Ti = dh_matrix(thetas_deg[i] + offset, d, a, alpha)
+    for i, (a, d, alpha) in enumerate(DH_TABLE):
+        Ti = dh_matrix(thetas_deg[i], d, a, alpha)
         matrices.append(Ti)
     return matrices
 
@@ -79,10 +79,9 @@ def print_dh_table():
     print(header)
     print("-"*70)
     joints = ['J1 Base', 'J2 Hombro', 'J3 Codo', 'J4 Muneca1', 'J5 Muneca2', 'J6 Gripper']
-    for i, (name, (a, d, alpha, offset)) in enumerate(zip(joints, DH_TABLE)):
+    for i, (name, (a, d, alpha)) in enumerate(zip(joints, DH_TABLE)):
         rmin, rmax = JOINT_RANGES[i]
-        offset_str = f"q{i+1}{offset:+.0f}" if offset != 0.0 else f"q{i+1}"
-        row = f"{name:<12} {a:<12.2f} {d:<12.2f} {alpha:>6.1f} deg   {offset_str:<12}  [{rmin}, {rmax}] deg"
+        row = f"{name:<12} {a:<12.2f} {d:<12.2f} {alpha:>6.1f} deg   theta_{i+1:<6}  [{rmin}, {rmax}] deg"
         print(row)
     print("="*70)
 
